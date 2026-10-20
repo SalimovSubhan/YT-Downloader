@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 
 void main() {
@@ -39,6 +40,8 @@ class _DownloaderPageState extends State<DownloaderPage> {
   bool _loading = false;
   String _status = '';
   bool _isError = false;
+  double? _progress; // null = скрыт, 0..1 = прогресс
+  String _progressLabel = '';
 
   final _browsers = ['safari', 'chrome', 'firefox', 'brave'];
 
@@ -51,10 +54,11 @@ class _DownloaderPageState extends State<DownloaderPage> {
     'Только аудио (MP3)',
   ];
 
+  static final _progressRe = RegExp(r'\[download\]\s+([\d.]+)%\s+of\s+(\S+)\s+at\s+(\S+)');
+
   List<String> _buildCmd(String url) {
     const yt = '/opt/homebrew/bin/yt-dlp';
     final out = '${Platform.environment['HOME']}/Downloads/%(title)s.%(ext)s';
-
     final cookies = ['--cookies-from-browser', _browser];
 
     if (_quality == 'Только аудио (MP3)') {
@@ -90,24 +94,52 @@ class _DownloaderPageState extends State<DownloaderPage> {
       _loading = true;
       _status = 'Загружаю...';
       _isError = false;
+      _progress = 0;
+      _progressLabel = '';
     });
 
     try {
       final cmd = _buildCmd(url);
-      final result = await Process.run(cmd.first, cmd.sublist(1));
-      if (result.exitCode == 0) {
+      final process = await Process.start(cmd.first, cmd.sublist(1));
+
+      final stderr = StringBuffer();
+
+      process.stdout.transform(utf8.decoder).listen((chunk) {
+        for (final line in chunk.split('\n')) {
+          final m = _progressRe.firstMatch(line);
+          if (m != null) {
+            final pct = double.tryParse(m.group(1)!) ?? 0;
+            setState(() {
+              _progress = pct / 100;
+              _progressLabel = '${m.group(1)}% · ${m.group(2)} · ${m.group(3)}/s';
+            });
+          }
+        }
+      });
+
+      process.stderr.transform(utf8.decoder).listen((chunk) {
+        stderr.write(chunk);
+      });
+
+      final exitCode = await process.exitCode;
+
+      if (exitCode == 0) {
         setState(() {
+          _progress = 1;
+          _progressLabel = '';
           _status = '✅ Готово! Файл сохранён в папку Загрузки';
           _isError = false;
           _loading = false;
         });
         _urlController.clear();
       } else {
-        final lines = (result.stderr as String).trim().split('\n');
+        final lines = stderr.toString().trim().split('\n');
         setState(() {
           _status = '❌ ${lines.last}';
           _isError = true;
           _loading = false;
+          _progress = null;
+          _progressLabel = '';
         });
       }
     } catch (e) {
@@ -115,6 +147,8 @@ class _DownloaderPageState extends State<DownloaderPage> {
         _status = '❌ $e';
         _isError = true;
         _loading = false;
+        _progress = null;
+        _progressLabel = '';
       });
     }
   }
@@ -206,9 +240,9 @@ class _DownloaderPageState extends State<DownloaderPage> {
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                   ),
                   child: _loading
-                      ? const SizedBox(
-                          width: 22, height: 22,
-                          child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2.5),
+                      ? const Text(
+                          'Загрузка...',
+                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
                         )
                       : const Text(
                           'Скачать',
@@ -216,8 +250,28 @@ class _DownloaderPageState extends State<DownloaderPage> {
                         ),
                 ),
               ),
-              if (_status.isNotEmpty) ...[
+              if (_progress != null) ...[
                 const SizedBox(height: 20),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(6),
+                  child: LinearProgressIndicator(
+                    value: _progress,
+                    minHeight: 8,
+                    backgroundColor: const Color(0xFF2A2A2A),
+                    valueColor: AlwaysStoppedAnimation(Colors.red.shade700),
+                  ),
+                ),
+                if (_progressLabel.isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    _progressLabel,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontSize: 12, color: Colors.grey),
+                  ),
+                ],
+              ],
+              if (_status.isNotEmpty) ...[
+                const SizedBox(height: 12),
                 Text(
                   _status,
                   textAlign: TextAlign.center,
